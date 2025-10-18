@@ -1,0 +1,143 @@
+name: Build iOS (auto-detect workspace/project) - produce .xcarchive and .ipa
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Show repo structure (debug)
+        run: |
+          echo "=== repo root ==="
+          ls -la
+          echo "=== src ==="
+          ls -la src || true
+          echo "=== src contents ==="
+          find src -maxdepth 2 -type f -print || true
+
+      - name: Set up Ruby (for CocoaPods)
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.x'
+
+      - name: Install CocoaPods
+        run: |
+          gem install cocoapods --no-document
+          cd src || exit 1
+          # ensure pod repo up-to-date; tolerate errors
+          pod repo update || true
+          pod install --repo-update || true
+
+      - name: Detect workspace/project and scheme
+        id: detect
+        working-directory: src
+        run: |
+          set -e
+          # find workspace or project
+          WORKSPACE_FILE=$(ls *.xcworkspace 2>/dev/null | head -n1 || true)
+          PROJECT_FILE=$(ls *.xcodeproj 2>/dev/null | head -n1 || true)
+          echo "workspace: '$WORKSPACE_FILE'"
+          echo "project: '$PROJECT_FILE'"
+
+          if [ -n "$WORKSPACE_FILE" ]; then
+            echo "Using workspace: $WORKSPACE_FILE"
+            # list schemes
+            SCHEMES=$(xcodebuild -workspace "$WORKSPACE_FILE" -list 2>/dev/null | sed -n '/Schemes:/,/^$/p' || true)
+          elif [ -n "$PROJECT_FILE" ]; then
+            echo "Using project: $PROJECT_FILE"
+            SCHEMES=$(xcodebuild -project "$PROJECT_FILE" -list 2>/dev/null | sed -n '/Schemes:/,/^$/p' || true)
+          else
+            echo "::error ::No .xcworkspace or .xcodeproj found in src. Make sure workspace/project is committed."
+            exit 1
+          fi
+
+          echo "Raw schemes section:"
+          echo "$SCHEMES"
+
+          # Try to find the first scheme name (non-empty, trimmed)
+          SCHEME=$(echo "$SCHEMES" | tail -n +2 | sed 's/^[[:space:]]*//' | sed '/^$/d' | head -n1 || true)
+
+          # If parsing failed, try common name 'AccoMitra'
+          if [ -z "$SCHEME" ]; then
+            echo "Could not auto-detect scheme; trying fallback 'AccoMitra'"
+            SCHEME="AccoMitra"
+          fi
+
+          echo "detected_scheme=$SCHEME" >> $GITHUB_OUTPUT
+          echo "workspace_file=$WORKSPACE_FILE" >> $GITHUB_OUTPUT
+          echo "project_file=$PROJECT_FILE" >> $GITHUB_OUTPUT
+
+      - name: Build archive (.xcarchive)
+        working-directory: src
+        env:
+          WORKSPACE: ${{ steps.detect.outputs.workspace_file }}
+          PROJECT: ${{ steps.detect.outputs.project_file }}
+          SCHEME: ${{ steps.detect.outputs.detected_scheme }}
+        run: |
+          set -e
+          echo "WORKSPACE=$WORKSPACE"
+          echo "PROJECT=$PROJECT"
+          echo "SCHEME=$SCHEME"
+
+          mkdir -p build
+
+          if [ -n "$WORKSPACE" ]; then
+            echo "Archiving workspace"
+            xcodebuild -workspace "$WORKSPACE" \
+                       -scheme "$SCHEME" \
+                       -configuration Release \
+                       -sdk iphoneos \
+                       -archivePath $PWD/build/${SCHEME}.xcarchive \
+                       clean archive | tee xcodebuild-archive.log
+          else
+            echo "Archiving project"
+            xcodebuild -project "$PROJECT" \
+                       -scheme "$SCHEME" \
+                       -configuration Release \
+                       -sdk iphoneos \
+                       -archivePath $PWD/build/${SCHEME}.xcarchive \
+                       clean archive | tee xcodebuild-archive.log
+          fi
+
+          echo "Archive step finished. Archive path: $PWD/build/${SCHEME}.xcarchive"
+          ls -la build || true
+
+      - name: Try exporting .ipa (will fail if no signing certs)
+        working-directory: src
+        env:
+          SCHEME: ${{ steps.detect.outputs.detected_scheme }}
+        run: |
+          set -e || true
+          ARCHIVE=build/${SCHEME}.xcarchive
+          EXPORT_DIR=build/export
+          mkdir -p "$EXPORT_DIR"
+          if [ -f exportOptions.plist ]; then
+            echo "Found exportOptions.plist; attempting export"
+            /usr/bin/xcodebuild -exportArchive \
+              -archivePath "$ARCHIVE" \
+              -exportOptionsPlist exportOptions.plist \
+              -exportPath "$EXPORT_DIR" | tee xcodebuild-export.log || true
+          else
+            echo "No exportOptions.plist found in src — skipping export"
+          fi
+          ls -la "$EXPORT_DIR" || true
+
+      - name: Upload artifacts (.xcarchive + export)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-artifacts
+          path: |
+            src/build/**/*.xcarchive
+            src/build/export/**/*.ipa
+            src/xcodebuild-archive.log
+            src/xcodebuild-export.log
