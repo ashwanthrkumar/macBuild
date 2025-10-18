@@ -43,6 +43,50 @@ jobs:
         working-directory: src
         run: |
           set -e
+          # Prefer top-level .xcworkspace directory (ls -d avoids returning internal package files)
+          WORKSPACE_FILE=$(ls -d *.xcworkspace 2>/dev/null | head -n1 || true)
+          PROJECT_FILE=$(ls -d *.xcodeproj 2>/dev/null | head -n1 || true)
+
+          echo "Found workspace: '$WORKSPACE_FILE'"
+          echo "Found project:   '$PROJECT_FILE'"
+
+          if [ -n "$WORKSPACE_FILE" ]; then
+            echo "Using workspace: $WORKSPACE_FILE"
+            SCHEMES=$(xcodebuild -workspace "$WORKSPACE_FILE" -list 2>/dev/null || true)
+          elif [ -n "$PROJECT_FILE" ]; then
+            echo "Using project: $PROJECT_FILE"
+            SCHEMES=$(xcodebuild -project "$PROJECT_FILE" -list 2>/dev/null || true)
+          else
+            echo "::error ::No .xcworkspace or .xcodeproj found in src. Make sure workspace/project is committed."
+            exit 1
+          fi
+
+          echo "Raw schemes output:"
+          echo "$SCHEMES"
+
+          # Parse the scheme name: try to find "Schemes:" section then grab first non-empty subsequent line
+          SCHEME=$(echo "$SCHEMES" | awk '/Schemes:/{flag=1; next} flag && NF{print; exit}')
+
+          # Fallback: try using directory name as scheme (common)
+          if [ -z "$SCHEME" ]; then
+            # remove extension
+            if [ -n "$WORKSPACE_FILE" ]; then
+              FALLBACK="$(basename "$WORKSPACE_FILE" .xcworkspace)"
+            else
+              FALLBACK="$(basename "$PROJECT_FILE" .xcodeproj)"
+            fi
+            echo "Could not auto-detect scheme; falling back to: $FALLBACK"
+            SCHEME="$FALLBACK"
+          fi
+
+          echo "detected_scheme=$SCHEME" >> $GITHUB_OUTPUT
+          echo "workspace_file=$WORKSPACE_FILE" >> $GITHUB_OUTPUT
+          echo "project_file=$PROJECT_FILE" >> $GITHUB_OUTPUT
+
+        id: detect
+        working-directory: src
+        run: |
+          set -e
           # find workspace or project
           WORKSPACE_FILE=$(ls *.xcworkspace 2>/dev/null | head -n1 || true)
           PROJECT_FILE=$(ls *.xcodeproj 2>/dev/null | head -n1 || true)
