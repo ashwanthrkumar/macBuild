@@ -51,32 +51,33 @@ jobs:
 
           if [ -n "$WORKSPACE_FILE" ]; then
             echo "Using workspace: $WORKSPACE_FILE"
-            SCHEMES=$(xcodebuild -workspace "$WORKSPACE_FILE" -list 2>/dev/null || true)
+            SCHEMES_RAW=$(xcodebuild -workspace "$WORKSPACE_FILE" -list 2>/dev/null || true)
           elif [ -n "$PROJECT_FILE" ]; then
             echo "Using project: $PROJECT_FILE"
-            SCHEMES=$(xcodebuild -project "$PROJECT_FILE" -list 2>/dev/null || true)
+            SCHEMES_RAW=$(xcodebuild -project "$PROJECT_FILE" -list 2>/dev/null || true)
           else
-            echo "::error ::No .xcworkspace or .xcodeproj found in src. Make sure workspace/project is committed."
+            echo "::error ::No .xcworkspace or .xcodeproj found in src."
             exit 1
           fi
 
           echo "Raw schemes output:"
-          echo "$SCHEMES"
+          echo "$SCHEMES_RAW"
 
-          # Parse the scheme name: try to find "Schemes:" section then grab first non-empty subsequent line
-          SCHEME=$(echo "$SCHEMES" | awk '/Schemes:/{flag=1; next} flag && NF{print; exit}')
+          # Extract first non-empty scheme after "Schemes:" and trim whitespace
+          SCHEME=$(echo "$SCHEMES_RAW" | awk '/Schemes:/{flag=1; next} flag && NF{ gsub(/^[ \t]+|[ \t]+$/,"",$0); print; exit }')
 
-          # Fallback: try using directory name as scheme (common)
+          # Fallback: use workspace/project base name (trimmed)
           if [ -z "$SCHEME" ]; then
             if [ -n "$WORKSPACE_FILE" ]; then
-              FALLBACK="$(basename "$WORKSPACE_FILE" .xcworkspace)"
+              SCHEME=$(basename "$WORKSPACE_FILE" .xcworkspace)
             else
-              FALLBACK="$(basename "$PROJECT_FILE" .xcodeproj)"
+              SCHEME=$(basename "$PROJECT_FILE" .xcodeproj)
             fi
-            echo "Could not auto-detect scheme; falling back to: $FALLBACK"
-            SCHEME="$FALLBACK"
+            SCHEME=$(echo "$SCHEME" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            echo "Falling back to scheme: $SCHEME"
           fi
 
+          echo "✅ Detected scheme: '$SCHEME'"
           echo "detected_scheme=$SCHEME" >> $GITHUB_OUTPUT
           echo "workspace_file=$WORKSPACE_FILE" >> $GITHUB_OUTPUT
           echo "project_file=$PROJECT_FILE" >> $GITHUB_OUTPUT
@@ -89,9 +90,9 @@ jobs:
           SCHEME: ${{ steps.detect.outputs.detected_scheme }}
         run: |
           set -e
-          echo "WORKSPACE=$WORKSPACE"
-          echo "PROJECT=$PROJECT"
-          echo "SCHEME=$SCHEME"
+          echo "WORKSPACE='$WORKSPACE'"
+          echo "PROJECT='$PROJECT'"
+          echo "SCHEME='$SCHEME'"
 
           mkdir -p build
 
@@ -101,7 +102,7 @@ jobs:
                        -scheme "$SCHEME" \
                        -configuration Release \
                        -sdk iphoneos \
-                       -archivePath $PWD/build/${SCHEME}.xcarchive \
+                       -archivePath "$PWD/build/${SCHEME}.xcarchive" \
                        clean archive | tee xcodebuild-archive.log
           else
             echo "Archiving project"
@@ -109,7 +110,7 @@ jobs:
                        -scheme "$SCHEME" \
                        -configuration Release \
                        -sdk iphoneos \
-                       -archivePath $PWD/build/${SCHEME}.xcarchive \
+                       -archivePath "$PWD/build/${SCHEME}.xcarchive" \
                        clean archive | tee xcodebuild-archive.log
           fi
 
@@ -122,8 +123,8 @@ jobs:
           SCHEME: ${{ steps.detect.outputs.detected_scheme }}
         run: |
           set -e || true
-          ARCHIVE=build/${SCHEME}.xcarchive
-          EXPORT_DIR=build/export
+          ARCHIVE="build/${SCHEME}.xcarchive"
+          EXPORT_DIR="build/export"
           mkdir -p "$EXPORT_DIR"
           if [ -f exportOptions.plist ]; then
             echo "Found exportOptions.plist; attempting export"
