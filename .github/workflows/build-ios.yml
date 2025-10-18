@@ -22,7 +22,7 @@ jobs:
           ls -la
           echo "=== src ==="
           ls -la src || true
-          echo "=== src contents ==="
+          echo "=== src contents (depth 2) ==="
           find src -maxdepth 2 -type f -print || true
 
       - name: Set up Ruby (for CocoaPods)
@@ -34,7 +34,6 @@ jobs:
         run: |
           gem install cocoapods --no-document
           cd src || exit 1
-          # ensure pod repo up-to-date; tolerate errors
           pod repo update || true
           pod install --repo-update || true
 
@@ -69,7 +68,6 @@ jobs:
 
           # Fallback: try using directory name as scheme (common)
           if [ -z "$SCHEME" ]; then
-            # remove extension
             if [ -n "$WORKSPACE_FILE" ]; then
               FALLBACK="$(basename "$WORKSPACE_FILE" .xcworkspace)"
             else
@@ -77,44 +75,6 @@ jobs:
             fi
             echo "Could not auto-detect scheme; falling back to: $FALLBACK"
             SCHEME="$FALLBACK"
-          fi
-
-          echo "detected_scheme=$SCHEME" >> $GITHUB_OUTPUT
-          echo "workspace_file=$WORKSPACE_FILE" >> $GITHUB_OUTPUT
-          echo "project_file=$PROJECT_FILE" >> $GITHUB_OUTPUT
-
-        id: detect
-        working-directory: src
-        run: |
-          set -e
-          # find workspace or project
-          WORKSPACE_FILE=$(ls *.xcworkspace 2>/dev/null | head -n1 || true)
-          PROJECT_FILE=$(ls *.xcodeproj 2>/dev/null | head -n1 || true)
-          echo "workspace: '$WORKSPACE_FILE'"
-          echo "project: '$PROJECT_FILE'"
-
-          if [ -n "$WORKSPACE_FILE" ]; then
-            echo "Using workspace: $WORKSPACE_FILE"
-            # list schemes
-            SCHEMES=$(xcodebuild -workspace "$WORKSPACE_FILE" -list 2>/dev/null | sed -n '/Schemes:/,/^$/p' || true)
-          elif [ -n "$PROJECT_FILE" ]; then
-            echo "Using project: $PROJECT_FILE"
-            SCHEMES=$(xcodebuild -project "$PROJECT_FILE" -list 2>/dev/null | sed -n '/Schemes:/,/^$/p' || true)
-          else
-            echo "::error ::No .xcworkspace or .xcodeproj found in src. Make sure workspace/project is committed."
-            exit 1
-          fi
-
-          echo "Raw schemes section:"
-          echo "$SCHEMES"
-
-          # Try to find the first scheme name (non-empty, trimmed)
-          SCHEME=$(echo "$SCHEMES" | tail -n +2 | sed 's/^[[:space:]]*//' | sed '/^$/d' | head -n1 || true)
-
-          # If parsing failed, try common name 'AccoMitra'
-          if [ -z "$SCHEME" ]; then
-            echo "Could not auto-detect scheme; trying fallback 'AccoMitra'"
-            SCHEME="AccoMitra"
           fi
 
           echo "detected_scheme=$SCHEME" >> $GITHUB_OUTPUT
