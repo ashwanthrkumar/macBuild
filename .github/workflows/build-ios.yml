@@ -1,4 +1,4 @@
-name: Build iOS (auto-detect workspace/project) - produce .xcarchive and .ipa
+name: Build iOS (produce unsigned .xcarchive) - auto-detect workspace/project
 
 on:
   push:
@@ -42,7 +42,6 @@ jobs:
         working-directory: src
         run: |
           set -e
-          # Prefer top-level .xcworkspace directory (ls -d avoids returning internal package files)
           WORKSPACE_FILE=$(ls -d *.xcworkspace 2>/dev/null | head -n1 || true)
           PROJECT_FILE=$(ls -d *.xcodeproj 2>/dev/null | head -n1 || true)
 
@@ -50,10 +49,8 @@ jobs:
           echo "Found project:   '$PROJECT_FILE'"
 
           if [ -n "$WORKSPACE_FILE" ]; then
-            echo "Using workspace: $WORKSPACE_FILE"
             SCHEMES_RAW=$(xcodebuild -workspace "$WORKSPACE_FILE" -list 2>/dev/null || true)
           elif [ -n "$PROJECT_FILE" ]; then
-            echo "Using project: $PROJECT_FILE"
             SCHEMES_RAW=$(xcodebuild -project "$PROJECT_FILE" -list 2>/dev/null || true)
           else
             echo "::error ::No .xcworkspace or .xcodeproj found in src."
@@ -63,10 +60,8 @@ jobs:
           echo "Raw schemes output:"
           echo "$SCHEMES_RAW"
 
-          # Extract first non-empty scheme after "Schemes:" and trim whitespace
           SCHEME=$(echo "$SCHEMES_RAW" | awk '/Schemes:/{flag=1; next} flag && NF{ gsub(/^[ \t]+|[ \t]+$/,"",$0); print; exit }')
 
-          # Fallback: use workspace/project base name (trimmed)
           if [ -z "$SCHEME" ]; then
             if [ -n "$WORKSPACE_FILE" ]; then
               SCHEME=$(basename "$WORKSPACE_FILE" .xcworkspace)
@@ -77,12 +72,11 @@ jobs:
             echo "Falling back to scheme: $SCHEME"
           fi
 
-          echo "✅ Detected scheme: '$SCHEME'"
           echo "detected_scheme=$SCHEME" >> $GITHUB_OUTPUT
           echo "workspace_file=$WORKSPACE_FILE" >> $GITHUB_OUTPUT
           echo "project_file=$PROJECT_FILE" >> $GITHUB_OUTPUT
 
-      - name: Build archive (.xcarchive)
+      - name: Build unsigned archive (.xcarchive)
         working-directory: src
         env:
           WORKSPACE: ${{ steps.detect.outputs.workspace_file }}
@@ -96,53 +90,43 @@ jobs:
 
           mkdir -p build
 
+          # Build with signing disabled so we can produce an unsigned archive.
+          # This avoids requirement for a development team in CI.
+          # Note: the produced archive will be unsigned; export must be done on a Mac with proper signing.
           if [ -n "$WORKSPACE" ]; then
-            echo "Archiving workspace"
             xcodebuild -workspace "$WORKSPACE" \
                        -scheme "$SCHEME" \
                        -configuration Release \
                        -sdk iphoneos \
                        -archivePath "$PWD/build/${SCHEME}.xcarchive" \
+                       CODE_SIGNING_ALLOWED=NO \
+                       CODE_SIGN_IDENTITY="" \
+                       CODE_SIGNING_REQUIRED=NO \
                        clean archive | tee xcodebuild-archive.log
           else
-            echo "Archiving project"
             xcodebuild -project "$PROJECT" \
                        -scheme "$SCHEME" \
                        -configuration Release \
                        -sdk iphoneos \
                        -archivePath "$PWD/build/${SCHEME}.xcarchive" \
+                       CODE_SIGNING_ALLOWED=NO \
+                       CODE_SIGN_IDENTITY="" \
+                       CODE_SIGNING_REQUIRED=NO \
                        clean archive | tee xcodebuild-archive.log
           fi
 
           echo "Archive step finished. Archive path: $PWD/build/${SCHEME}.xcarchive"
           ls -la build || true
 
-      - name: Try exporting .ipa (will fail if no signing certs)
+      - name: Skip export (unsigned archive produced)
         working-directory: src
-        env:
-          SCHEME: ${{ steps.detect.outputs.detected_scheme }}
         run: |
-          set -e || true
-          ARCHIVE="build/${SCHEME}.xcarchive"
-          EXPORT_DIR="build/export"
-          mkdir -p "$EXPORT_DIR"
-          if [ -f exportOptions.plist ]; then
-            echo "Found exportOptions.plist; attempting export"
-            /usr/bin/xcodebuild -exportArchive \
-              -archivePath "$ARCHIVE" \
-              -exportOptionsPlist exportOptions.plist \
-              -exportPath "$EXPORT_DIR" | tee xcodebuild-export.log || true
-          else
-            echo "No exportOptions.plist found in src — skipping export"
-          fi
-          ls -la "$EXPORT_DIR" || true
+          echo "Skipping export since archive is unsigned. Download the .xcarchive artifact and export on a Mac."
 
-      - name: Upload artifacts (.xcarchive + export)
+      - name: Upload artifacts (.xcarchive + logs)
         uses: actions/upload-artifact@v4
         with:
           name: ios-artifacts
           path: |
             src/build/**/*.xcarchive
-            src/build/export/**/*.ipa
             src/xcodebuild-archive.log
-            src/xcodebuild-export.log
